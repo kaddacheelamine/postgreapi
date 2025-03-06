@@ -6,7 +6,7 @@ from typing import List, Optional
 import enum
 from fastapi.middleware.cors import CORSMiddleware
 
-DATABASE_URL = "postgresql://user:password@localhost/dbname" # Replace with your PostgreSQL connection details
+DATABASE_URL = "postgresql://rushita_user:xHFJdbYFuaPeiiEsPQ4Yc8JafIHaaagq@dpg-cv4ra4qj1k6c738qjsmg-a.oregon-postgres.render.com/rushita" # Replace with your PostgreSQL connection details
 
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
