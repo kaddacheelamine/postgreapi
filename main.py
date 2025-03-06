@@ -1,43 +1,110 @@
-from fastapi import FastAPI, HTTPException, Depends
-from sqlalchemy import create_engine, Column, Integer, String, ForeignKey, Enum
-from sqlalchemy.orm import sessionmaker, declarative_base, relationship, Session
+from fastapi import FastAPI, HTTPException, Depends, status
+from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import create_engine, Column, Integer, String, Text, ForeignKey
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker, relationship, Session
 from pydantic import BaseModel
 from typing import List, Optional
-import enum
-from fastapi.middleware.cors import CORSMiddleware
+import os
+from dotenv import load_dotenv
 
-DATABASE_URL = "postgresql://rushita_user:xHFJdbYFuaPeiiEsPQ4Yc8JafIHaaagq@dpg-cv4ra4qj1k6c738qjsmg-a.oregon-postgres.render.com/rushita" # Replace with your PostgreSQL connection details
+# Load environment variables
+load_dotenv()
 
+# Database configuration
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://rushita_user:xHFJdbYFuaPeiiEsPQ4Yc8JafIHaaagq@dpg-cv4ra4qj1k6c738qjsmg-a/rushita")
+
+# SQLAlchemy setup
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
-# Define NoteType as an Enum
-class NoteType(str, enum.Enum):
-    regular = "regular"
-    green = "green"
-
-# Database Models
-class CanvasSectionDB(Base):
-    __tablename__ = "canvas_sections"
-
+# Database models
+class CanvasModel(Base):
+    __tablename__ = "canvases"
+    
     id = Column(Integer, primary_key=True, index=True)
-    section_id = Column(String, unique=True, index=True) # e.g., 'key-partners'
+    name = Column(String, index=True)
+    created_at = Column(String)  # ISO format date string
+    updated_at = Column(String)  # ISO format date string
+    sections = relationship("SectionModel", back_populates="canvas", cascade="all, delete")
+
+class SectionModel(Base):
+    __tablename__ = "sections"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    section_id = Column(String, index=True)  # Original section ID from frontend (e.g., 'key-partners')
     title = Column(String)
-    notes = relationship("NoteDB", back_populates="section")
+    canvas_id = Column(Integer, ForeignKey("canvases.id"))
+    canvas = relationship("CanvasModel", back_populates="sections")
+    notes = relationship("NoteModel", back_populates="section", cascade="all, delete")
 
-class NoteDB(Base):
+class NoteModel(Base):
     __tablename__ = "notes"
-
+    
     id = Column(Integer, primary_key=True, index=True)
-    content = Column(String)
-    type = Column(Enum(NoteType), default=NoteType.regular)
-    section_id_fk = Column(Integer, ForeignKey("canvas_sections.id"))
-    section = relationship("CanvasSectionDB", back_populates="notes")
+    note_id = Column(String, index=True)  # Original note ID from frontend
+    content = Column(Text)
+    type = Column(String)  # 'regular' or 'green'
+    section_id = Column(Integer, ForeignKey("sections.id"))
+    section = relationship("SectionModel", back_populates="notes")
 
-Base.metadata.create_all(engine) # Create tables if they don't exist
+# Create the tables
+Base.metadata.create_all(bind=engine)
 
-# Dependency to get database session
+# Pydantic models for request/response
+class NoteBase(BaseModel):
+    id: str
+    content: str
+    type: str
+
+class NoteCreate(NoteBase):
+    pass
+
+class Note(NoteBase):
+    class Config:
+        orm_mode = True
+
+class SectionBase(BaseModel):
+    id: str
+    title: str
+    section: str
+    notes: List[NoteBase]
+
+class SectionCreate(SectionBase):
+    pass
+
+class Section(SectionBase):
+    class Config:
+        orm_mode = True
+
+class CanvasBase(BaseModel):
+    name: str
+    sections: List[SectionBase]
+
+class CanvasCreate(CanvasBase):
+    pass
+
+class CanvasUpdate(CanvasBase):
+    pass
+
+class Canvas(CanvasBase):
+    id: int
+    created_at: str
+    updated_at: str
+
+    class Config:
+        orm_mode = True
+
+class CanvasList(BaseModel):
+    id: int
+    name: str
+    updated_at: str
+    
+    class Config:
+        orm_mode = True
+
+# Dependency
 def get_db():
     db = SessionLocal()
     try:
@@ -45,119 +112,162 @@ def get_db():
     finally:
         db.close()
 
-# Pydantic Models for API requests and responses
-class NoteBase(BaseModel):
-    content: str
-    type: NoteType = NoteType.regular
+# Create FastAPI app
+app = FastAPI(title="Business Model Canvas API")
 
-class NoteCreate(NoteBase):
-    pass
-
-class Note(NoteBase):
-    id: int
-    section_id_fk: int
-
-    class Config:
-        orm_mode = True
-
-class CanvasSectionBase(BaseModel):
-    section_id: str
-    title: str
-
-class CanvasSectionCreate(CanvasSectionBase):
-    pass
-
-class CanvasSection(CanvasSectionBase):
-    id: int
-    notes: List[Note] = []
-
-    class Config:
-        orm_mode = True
-
-app = FastAPI()
+# Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allows all origins; you should restrict this in production
+    allow_origins=["*"],  # In production, replace with specific origins
     allow_credentials=True,
-    allow_methods=["*"],  # Allows all methods
-    allow_headers=["*"],  # Allows all headers
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-# Initialize Canvas Sections (Run this only once or when you need to reset sections)
-@app.post("/init_sections/", response_model=List[CanvasSection])
-def initialize_sections(db: Session = Depends(get_db)):
-    default_sections_data = [
-        {"section_id": 'key-partners', "title": 'Key Partners'},
-        {"section_id": 'key-activities', "title": 'Key Activities'},
-        {"section_id": 'key-resources', "title": 'Key Resources'},
-        {"section_id": 'value-proposition', "title": 'Value Proposition'},
-        {"section_id": 'customer-relationship', "title": 'Customer Relationship'},
-        {"section_id": 'channels', "title": 'Channels'},
-        {"section_id": 'customer-segments', "title": 'Customer Segments'},
-        {"section_id": 'cost-structure', "title": 'Cost Structure'},
-        {"section_id": 'revenue-streams', "title": 'Revenue Streams'}
-    ]
-    sections = []
-    for section_data in default_sections_data:
-        db_section = CanvasSectionDB(**section_data)
+# API routes
+@app.get("/")
+def read_root():
+    return {"message": "Business Model Canvas API"}
+
+@app.get("/api/canvases", response_model=List[CanvasList])
+def get_canvases(db: Session = Depends(get_db)):
+    canvases = db.query(CanvasModel).all()
+    return canvases
+
+@app.post("/api/canvases", response_model=Canvas, status_code=status.HTTP_201_CREATED)
+def create_canvas(canvas: CanvasCreate, db: Session = Depends(get_db)):
+    from datetime import datetime
+    
+    # Create timestamp
+    now = datetime.utcnow().isoformat()
+    
+    # Create canvas
+    db_canvas = CanvasModel(
+        name=canvas.name,
+        created_at=now,
+        updated_at=now
+    )
+    db.add(db_canvas)
+    db.commit()
+    db.refresh(db_canvas)
+    
+    # Create sections
+    for section_data in canvas.sections:
+        db_section = SectionModel(
+            section_id=section_data.id,
+            title=section_data.title,
+            canvas_id=db_canvas.id
+        )
         db.add(db_section)
         db.commit()
         db.refresh(db_section)
-        sections.append(CanvasSection.from_orm(db_section))
-    return sections
-
-
-# Get all Canvas Sections with Notes
-@app.get("/canvas/", response_model=List[CanvasSection])
-def read_canvas(db: Session = Depends(get_db)):
-    sections_db = db.query(CanvasSectionDB).all()
-    return [CanvasSection.from_orm(section) for section in sections_db]
-
-# Create a Note for a Section
-@app.post("/sections/{section_id}/notes/", response_model=Note)
-def create_note_for_section(section_id: str, note: NoteCreate, db: Session = Depends(get_db)):
-    db_section = db.query(CanvasSectionDB).filter(CanvasSectionDB.section_id == section_id).first()
-    if not db_section:
-        raise HTTPException(status_code=404, detail="Section not found")
-    db_note = NoteDB(**note.dict(), section_id_fk=db_section.id)
-    db.add(db_note)
+        
+        # Create notes
+        for note_data in section_data.notes:
+            db_note = NoteModel(
+                note_id=note_data.id,
+                content=note_data.content,
+                type=note_data.type,
+                section_id=db_section.id
+            )
+            db.add(db_note)
+        
     db.commit()
-    db.refresh(db_note)
-    return Note.from_orm(db_note)
+    
+    # Return the created canvas with all its data
+    return get_canvas(db_canvas.id, db)
 
-# Read a Note
-@app.get("/sections/{section_id}/notes/{note_id}", response_model=Note)
-def read_note(section_id: str, note_id: int, db: Session = Depends(get_db)):
-    db_note = db.query(NoteDB).join(CanvasSectionDB).filter(
-        NoteDB.id == note_id, CanvasSectionDB.section_id == section_id
-    ).first()
-    if not db_note:
-        raise HTTPException(status_code=404, detail="Note not found")
-    return Note.from_orm(db_note)
+@app.get("/api/canvases/{canvas_id}", response_model=Canvas)
+def get_canvas(canvas_id: int, db: Session = Depends(get_db)):
+    canvas = db.query(CanvasModel).filter(CanvasModel.id == canvas_id).first()
+    if canvas is None:
+        raise HTTPException(status_code=404, detail="Canvas not found")
+    
+    # Construct the response
+    result = {
+        "id": canvas.id,
+        "name": canvas.name,
+        "created_at": canvas.created_at,
+        "updated_at": canvas.updated_at,
+        "sections": []
+    }
+    
+    # Add sections and notes
+    for section in canvas.sections:
+        section_data = {
+            "id": section.section_id,
+            "title": section.title,
+            "section": section.section_id,
+            "notes": []
+        }
+        
+        for note in section.notes:
+            note_data = {
+                "id": note.note_id,
+                "content": note.content,
+                "type": note.type
+            }
+            section_data["notes"].append(note_data)
+        
+        result["sections"].append(section_data)
+    
+    return result
 
-
-# Update a Note
-@app.put("/sections/{section_id}/notes/{note_id}", response_model=Note)
-def update_note(section_id: str, note_id: int, note_update: NoteCreate, db: Session = Depends(get_db)):
-    db_note = db.query(NoteDB).join(CanvasSectionDB).filter(
-        NoteDB.id == note_id, CanvasSectionDB.section_id == section_id
-    ).first()
-    if not db_note:
-        raise HTTPException(status_code=404, detail="Note not found")
-    for key, value in note_update.dict().items():
-        setattr(db_note, key, value)
+@app.put("/api/canvases/{canvas_id}", response_model=Canvas)
+def update_canvas(canvas_id: int, canvas: CanvasUpdate, db: Session = Depends(get_db)):
+    db_canvas = db.query(CanvasModel).filter(CanvasModel.id == canvas_id).first()
+    if db_canvas is None:
+        raise HTTPException(status_code=404, detail="Canvas not found")
+    
+    # Update timestamp
+    from datetime import datetime
+    now = datetime.utcnow().isoformat()
+    
+    # Update canvas name
+    db_canvas.name = canvas.name
+    db_canvas.updated_at = now
+    
+    # Delete all existing sections and notes
+    db.query(SectionModel).filter(SectionModel.canvas_id == canvas_id).delete()
     db.commit()
-    db.refresh(db_note)
-    return Note.from_orm(db_note)
-
-# Delete a Note
-@app.delete("/sections/{section_id}/notes/{note_id}", response_model=dict)
-def delete_note(section_id: str, note_id: int, db: Session = Depends(get_db)):
-    db_note = db.query(NoteDB).join(CanvasSectionDB).filter(
-        NoteDB.id == note_id, CanvasSectionDB.section_id == section_id
-    ).first()
-    if not db_note:
-        raise HTTPException(status_code=404, detail="Note not found")
-    db.delete(db_note)
+    
+    # Create new sections and notes
+    for section_data in canvas.sections:
+        db_section = SectionModel(
+            section_id=section_data.id,
+            title=section_data.title,
+            canvas_id=db_canvas.id
+        )
+        db.add(db_section)
+        db.commit()
+        db.refresh(db_section)
+        
+        # Create notes
+        for note_data in section_data.notes:
+            db_note = NoteModel(
+                note_id=note_data.id,
+                content=note_data.content,
+                type=note_data.type,
+                section_id=db_section.id
+            )
+            db.add(db_note)
+        
     db.commit()
-    return {"detail": "Note deleted successfully"}
+    
+    return get_canvas(canvas_id, db)
+
+@app.delete("/api/canvases/{canvas_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_canvas(canvas_id: int, db: Session = Depends(get_db)):
+    db_canvas = db.query(CanvasModel).filter(CanvasModel.id == canvas_id).first()
+    if db_canvas is None:
+        raise HTTPException(status_code=404, detail="Canvas not found")
+    
+    db.delete(db_canvas)
+    db.commit()
+    
+    return None
+
+# Run the application
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
